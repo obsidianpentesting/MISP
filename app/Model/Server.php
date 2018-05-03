@@ -43,11 +43,7 @@ class Server extends AppModel {
 		'url' => array( // TODO add extra validation to refuse multiple time the same url from the same org
 			'url' => array(
 				'rule' => array('url'),
-				'message' => 'Please enter a valid base-url.',
-				//'allowEmpty' => false,
-				//'required' => false,
-				//'last' => false, // Stop validation after this rule
-				//'on' => 'create', // Limit validation to 'create' or 'update' operations
+				'message' => 'Please enter a valid base-url.'
 			)
 		),
 		'authkey' => array(
@@ -109,6 +105,14 @@ class Server extends AppModel {
 		),
 	);
 
+	public $command_line_functions = array(
+		'pull' => 'MISP/app/Console/cake Server pull [user_id] [server_id] [full|update]',
+		'push' => 'MISP/app/Console/cake Server push [user_id] [server_id]',
+		'cacheFeed' => 'MISP/app/Console/cake Server cacheFeed [user_id] [feed_id|all|csv|text|misp]',
+		'fetchFeed' => 'MISP/app/Console/cake Server fetchFeed [user_id] [feed_id|all|csv|text|misp]',
+		'enrichment' => 'MISP/app/Console/cake Event enrichEvent [user_id] [event_id] [json_encoded_module_list]'
+	);
+
 	public $serverSettings = array(
 			'MISP' => array(
 					'branch' => 1,
@@ -127,6 +131,32 @@ class Server extends AppModel {
 							'errorMessage' => '',
 							'test' => 'testLive',
 							'type' => 'boolean',
+					),
+					'enable_advanced_correlations' => array(
+							'level' => 0,
+							'description' => 'Enable some performance heavy correlations (currently CIDR correlation)',
+							'value' => false,
+							'errorMessage' => '',
+							'test' => 'testBool',
+							'type' => 'boolean',
+							'null' => true
+					),
+					'ssdeep_correlation_threshold' => array(
+						'level' => 1,
+						'description' => 'Set the ssdeep score at which to consider two ssdeep hashes as correlating [1-100]',
+						'value' => 40,
+						'errorMessage' => '',
+						'test' => 'testForEmpty',
+						'type' => 'numeric'
+					),
+					'max_correlations_per_event' => array(
+							'level' => 1,
+							'description' => 'Sets the maximum number of correlations that can be fetched with a single event. For extreme edge cases this can prevent memory issues. The default value is 5k.',
+							'value' => 5000,
+							'errorMessage' => '',
+							'test' => 'testForNumeric',
+							'type' => 'numeric',
+							'null' => true
 					),
 					'maintenance_message' => array(
 							'level' => 2,
@@ -151,6 +181,16 @@ class Server extends AppModel {
 							'errorMessage' => '',
 							'test' => 'testForEmpty',
 							'type' => 'string',
+					),
+					'disable_cached_exports' => array(
+							'level' => 1,
+							'description' => 'Cached exports can take up a considerable amount of space and can be disabled instance wide using this setting. Disabling the cached exports is not recommended as it\'s a valuable feature, however, if your server is having free space issues it might make sense to take this step.',
+							'value' => false,
+							'null' => true,
+							'errorMessage' => '',
+							'test' => 'testDisableCache',
+							'type' => 'boolean',
+							'afterHook' => 'disableCacheAfterHook',
 					),
 					'header' => array(
 							'level' => 3,
@@ -249,6 +289,14 @@ class Server extends AppModel {
 							'type' => 'numeric',
 							'optionsSource' => 'LocalOrgs',
 					),
+					'uuid' => array(
+							'level' => 0,
+							'description' => 'The MISP instance UUID. This UUID is used to identify this instance.',
+							'value' => '0',
+							'errorMessage' => 'No valid UUID set',
+							'test' => 'testUuid',
+							'type' => 'string'
+					),
 					'logo' => array(
 							'level' => 3,
 							'description' => 'This setting is deprecated and can be safely removed.',
@@ -321,6 +369,15 @@ class Server extends AppModel {
 							'test' => 'testBool',
 							'type' => 'boolean',
 					),
+					'attachments_dir' => array(
+							'level' => 2,
+							'description' => 'Directory where attachments are stored. MISP will NOT migrate the existing data if you change this setting. The only safe way to change this setting is in config.php, when MISP is not running, and after having moved/copied the existing data to the new location. This directory must already exist and be writable and readable by the MISP application.',
+							'value' =>  'app/files', # GUI display purpose only. Default value defined in func getDefaultAttachments_dir()
+							'errorMessage' => '',
+							'null' => false,
+							'test' => 'testForWritableDir',
+							'type' => 'string',
+					),
 					'cached_attachments' => array(
 							'level' => 1,
 							'description' => 'Allow the XML caches to include the encoded attachments.',
@@ -328,6 +385,14 @@ class Server extends AppModel {
 							'errorMessage' => '',
 							'test' => 'testBool',
 							'type' => 'boolean',
+					),
+					'download_attachments_on_load' => array(
+						'level' => 2,
+						'description' => 'Always download attachments when loaded by a user in a browser',
+						'value' => true,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean',
 					),
 					'email' => array(
 							'level' => 0,
@@ -380,7 +445,7 @@ class Server extends AppModel {
 					),
 					'extended_alert_subject' => array(
 							'level' => 1,
-							'description' => 'enabling this flag will allow the event description to be transmitted in the alert e-mail\'s subject. Be aware that this is not encrypted by PGP, so only enable it if you accept that part of the event description will be sent out in clear-text.',
+							'description' => 'enabling this flag will allow the event description to be transmitted in the alert e-mail\'s subject. Be aware that this is not encrypted by GnuPG, so only enable it if you accept that part of the event description will be sent out in clear-text.',
 							'value' => false,
 							'errorMessage' => '',
 							'test' => 'testBool',
@@ -462,6 +527,14 @@ class Server extends AppModel {
 							'test' => 'testForCustomImage',
 							'type' => 'string',
 					),
+					'title_text' => array(
+						'level' => 2,
+						'description' => 'Used in the page title, after the name of the page',
+						'value' => 'MISP',
+						'errorMessage' => '',
+						'test' => 'testForEmpty',
+						'type' => 'string',
+					),
 					'take_ownership_xml_import' => array(
 							'level' => 2,
 							'description' => 'Allows users to take ownership of an event uploaded via the "Add MISP XML" button. This allows spoofing the creator of a manually imported event, also breaking possibly breaking the original intended releasability. Synchronising with an instance that has a different creator for the same event can lead to unwanted consequences.',
@@ -523,18 +596,16 @@ class Server extends AppModel {
 					'enableEventBlacklisting' => array(
 							'level' => 1,
 							'description' => 'Since version 2.3.107 you can start blacklisting event UUIDs to prevent them from being pushed to your instance. This functionality will also happen silently whenever an event is deleted, preventing a deleted event from being pushed back from another instance.',
-							'value' => false,
+							'value' => true,
 							'type' => 'boolean',
-							'test' => 'testBool',
-							'beforeHook' => 'eventBlacklistingBeforeHook'
+							'test' => 'testBool'
 					),
 					'enableOrgBlacklisting' => array(
 							'level' => 1,
 							'description' => 'Blacklisting organisation UUIDs to prevent the creation of any event created by the blacklisted organisation.',
-							'value' => false,
+							'value' => true,
 							'type' => 'boolean',
-							'test' => 'testBool',
-							'beforeHook' => 'orgBlacklistingBeforeHook'
+							'test' => 'testBool'
 					),
 					'log_client_ip' => array(
 							'level' => 1,
@@ -552,15 +623,6 @@ class Server extends AppModel {
 							'errorMessage' => '',
 							'test' => 'testBool',
 							'type' => 'boolean',
-					),
-					'ManglePushTo23' => array(
-							'level' => 0,
-							'description' => 'When enabled, your 2.4+ instance can push events to MISP 2.3 installations. This is highly advised against and will result in degraded events and lost information. Use this at your own risk.',
-							'value' => false,
-							'errorMessage' => '',
-							'test' => 'testMangle',
-							'type' => 'boolean',
-							'null' => true
 					),
 					'delegation' => array(
 							'level' => 1,
@@ -592,6 +654,15 @@ class Server extends AppModel {
 					'showSightingsCountOnIndex' => array(
 							'level' => 1,
 							'description' => 'When enabled, the aggregate number of attribute sightings within the event becomes visible to the currently logged in user on the event index UI.',
+							'value' => false,
+							'errorMessage' => '',
+							'test' => 'testBool',
+							'type' => 'boolean',
+							'null' => true
+					),
+					'showDiscussionsCountOnIndex' => array(
+							'level' => 1,
+							'description' => 'When enabled, the aggregate number of discussion posts for the event becomes visible to the currently logged in user on the event index UI.',
 							'value' => false,
 							'errorMessage' => '',
 							'test' => 'testBool',
@@ -643,24 +714,6 @@ class Server extends AppModel {
 							'test' => 'testForNumeric',
 							'type' => 'numeric',
 							'null' => false,
-					),
-					'rh_shell_fix' => array(
-							'level' => 1,
-							'description' => 'If you are running CentOS or RHEL using SCL and are having issues with the Background workers not responding to start/stop/restarts via the worker interface, enable this setting. This will pre-pend the shell execution commands with the default path to rh-php56 (/opt/rh/rh-php56/root/usr/bin:/opt/rh/rh-php56/root/usr/sbin).',
-							'value' => false,
-							'errorMessage' => '',
-							'test' => 'testBool',
-							'type' => 'boolean',
-							'null' => true,
-					),
-					'rh_shell_fix_path' => array(
-							'level' => 1,
-							'description' => 'If you have rh_shell_fix enabled, the default PATH for rh-php56 is added (/opt/rh/rh-php56/root/usr/bin:/opt/rh/rh-php56/root/usr/sbin). If you prefer to use a different path, you can set it here.',
-							'value' => '/opt/rh/rh-php56/root/usr/bin:/opt/rh/rh-php56/root/usr/sbin',
-							'errorMessage' => '',
-							'test' => 'testForPath',
-							'type' => 'string',
-							'null' => true,
 					),
 					'tmpdir' => array(
 							'level' => 1,
@@ -717,21 +770,53 @@ class Server extends AppModel {
 							'type' => 'boolean',
 							'null' => true
 					),
-					'showCorrelationsOnIndex' => array(
-							'level' => 1,
-							'description' => 'When enabled, the number of correlations visible to the currently logged in user will be visible on the event index UI. This comes at a performance cost but can be very useful to see correlating events at a glance.',
-							'value' => false,
-							'errorMessage' => '',
-							'test' => 'testBool',
-							'type' => 'boolean',
-							'null' => true
+					'redis_host' => array(
+						'level' => 0,
+						'description' => 'The host running the redis server to be used for generic MISP tasks such as caching. This is not to be confused by the redis server used by the background processing.',
+						'value' => '127.0.0.1',
+						'errorMessage' => '',
+						'test' => 'testForEmpty',
+						'type' => 'string'
 					),
+					'redis_port' => array(
+						'level' => 0,
+						'description' => 'The port used by the redis server to be used for generic MISP tasks such as caching. This is not to be confused by the redis server used by the background processing.',
+						'value' => 6379,
+						'errorMessage' => '',
+						'test' => 'testForNumeric',
+						'type' => 'numeric'
+					),
+					'redis_database' => array(
+						'level' => 0,
+						'description' => 'The database on the redis server to be used for generic MISP tasks. If you run more than one MISP instance, please make sure to use a different database on each instance.',
+						'value' => 13,
+						'errorMessage' => '',
+						'test' => 'testForNumeric',
+						'type' => 'numeric'
+					),
+					'redis_password' => array(
+						'level' => 0,
+						'description' => 'The password on the redis server (if any) to be used for generic MISP tasks.',
+						'value' => '',
+						'errorMessage' => '',
+						'test' => null,
+						'type' => 'string',
+						'redacted' => true
+					),
+					'event_view_filter_fields' => array(
+						'level' => 2,
+						'description' => 'Specify which fields to filter on when you search on the event view. Default values are : "id, uuid, value, comment, type, category, Tag.name"',
+						'value' => 'id, uuid, value, comment, type, category, Tag.name',
+						'errorMessage' => '',
+						'test' => null,
+						'type' => 'string',
+					)
 			),
 			'GnuPG' => array(
 					'branch' => 1,
 					'binary' => array(
 							'level' => 2,
-							'description' => 'The location of the GPG executable. If you would like to use a different gpg executable than /usr/bin/gpg, you can set it here. If the default is fine, just keep the setting suggested by MISP.',
+							'description' => 'The location of the GnuPG executable. If you would like to use a different GnuPG executable than /usr/bin/gpg, you can set it here. If the default is fine, just keep the setting suggested by MISP.',
 							'value' => '/usr/bin/gpg',
 							'errorMessage' => '',
 							'test' => 'testForGPGBinary',
@@ -739,7 +824,7 @@ class Server extends AppModel {
 					),
 					'onlyencrypted' => array(
 							'level' => 0,
-							'description' => 'Allow (false) unencrypted e-mails to be sent to users that don\'t have a PGP key.',
+							'description' => 'Allow (false) unencrypted e-mails to be sent to users that don\'t have a GnuPG key.',
 							'value' => '',
 							'errorMessage' => '',
 							'test' => 'testBool',
@@ -752,10 +837,18 @@ class Server extends AppModel {
 							'errorMessage' => '',
 							'test' => 'testBool',
 							'type' => 'boolean',
-					),
+                    ),
+                    'sign' => array(
+                            'level' => 2,
+                            'description' => 'Enable the signing of GnuPG emails. By default, GnuPG emails are signed',
+                            'value' => 'true',
+                            'errorMessage' => '',
+                            'test' => 'testBool',
+                            'type' => 'boolean',
+                    ),
 					'email' => array(
 							'level' => 0,
-							'description' => 'The e-mail address that the instance\'s PGP key is tied to.',
+							'description' => 'The e-mail address that the instance\'s GnuPG key is tied to.',
 							'value' => '',
 							'errorMessage' => '',
 							'test' => 'testForEmpty',
@@ -763,15 +856,16 @@ class Server extends AppModel {
 					),
 					'password' => array(
 							'level' => 1,
-							'description' => 'The password (if it is set) of the PGP key of the instance.',
+							'description' => 'The password (if it is set) of the GnuPG key of the instance.',
 							'value' => '',
 							'errorMessage' => '',
 							'test' => 'testForEmpty',
 							'type' => 'string',
+							'redacted' => true
 					),
 					'homedir' => array(
 							'level' => 0,
-							'description' => 'The location of the GPG homedir.',
+							'description' => 'The location of the GnuPG homedir.',
 							'value' => '',
 							'errorMessage' => '',
 							'test' => 'testForEmpty',
@@ -819,6 +913,7 @@ class Server extends AppModel {
 							'errorMessage' => '',
 							'test' => 'testForEmpty',
 							'type' => 'string',
+							'redacted' => true
 					),
 			),
 			'Proxy' => array(
@@ -875,22 +970,58 @@ class Server extends AppModel {
 							'type' => 'string',
 							'editable' => false,
 					),
+					'syslog' => array(
+						'level' => 0,
+						'description' => 'Enable this setting to pass all audit log entries directly to syslog. Keep in mind, this is verbose and will include user, organisation, event data.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean',
+						'null' => true
+					),
 					'password_policy_length' => array(
 							'level' => 2,
-							'description' => 'Password length requirement. If it is not set or it is set to 0, then the default value is assumed (6).',
-							'value' => '',
+							'description' => 'Password length requirement. If it is not set or it is set to 0, then the default value is assumed (12).',
+							'value' => '12',
 							'errorMessage' => '',
 							'test' => 'testPasswordLength',
 							'type' => 'numeric',
 					),
 					'password_policy_complexity' => array(
 							'level' => 2,
-							'description' => 'Password complexity requirement. Leave it empty for the default setting (3 out of 4, with either a digit or a special char) or enter your own regex. Keep in mind that the length is checked in another key. Example (simple 4 out of 4): /((?=.*\d)|(?=.*\W+))(?![\n])(?=.*[A-Z])(?=.*[a-z]).*$/',
-							'value' => '',
+							'description' => 'Password complexity requirement. Leave it empty for the default setting (3 out of 4, with either a digit or a special char) or enter your own regex. Keep in mind that the length is checked in another key. Default (simple 3 out of 4 or minimum 16 characters): /^((?=.*\d)|(?=.*\W+))(?![\n])(?=.*[A-Z])(?=.*[a-z]).*$|.{16,}/',
+							'value' => '/^((?=.*\d)|(?=.*\W+))(?![\n])(?=.*[A-Z])(?=.*[a-z]).*$|.{16,}/',
 							'errorMessage' => '',
 							'test' => 'testPasswordRegex',
 							'type' => 'string',
 					),
+					'require_password_confirmation' => array(
+						'level' => 1,
+						'description' => 'Enabling this setting will require users to submit their current password on any edits to their profile (including a triggered password change). For administrators, the confirmation will be required when changing the profile of any user. Could potentially mitigate an attacker trying to change a compromised user\'s password in order to establish persistance, however, enabling this feature will be highly annoying to users.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean',
+						'null' => true
+					),
+					'sanitise_attribute_on_delete' => array(
+						'level' => 1,
+						'description' => 'Enabling this setting will sanitise the contents of an attribute on a soft delete',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean',
+						'null' => true
+					),
+					'hide_organisation_index_from_users' => array(
+						'level' => 1,
+						'description' => 'Enabling this setting will block the organisation index from being visible to anyone besides site administrators on the current instance. Keep in mind that users can still see organisations that produce data via events, proposals, event history log entries, etc.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean',
+						'null' => true
+					)
 			),
 			'SecureAuth' => array(
 					'branch' => 1,
@@ -914,16 +1045,16 @@ class Server extends AppModel {
 			'Session' => array(
 					'branch' => 1,
 					'autoRegenerate' => array(
-							'level' => 1,
-							'description' => 'Set to true to automatically regenerate sessions on activity. (Recommended)',
+							'level' => 0,
+							'description' => 'Set to true to automatically regenerate sessions after x number of requests. This might lead to the user getting de-authenticated and is frustrating in general, so only enable it if you really need to regenerate sessions. (Not recommended)',
 							'value' => false,
 							'errorMessage' => '',
-							'test' => 'testBool',
+							'test' => 'testBoolFalse',
 							'type' => 'boolean',
 					),
 					'defaults' => array(
 							'level' => 0,
-							'description' => 'The session type used by MISP. The default setting is database, which will use the MySQL tables for the session data (supported options: database, php). The recommended option is php and setting your PHP up to use redis sessions via your php.ini. Just add \'session.save_handler = redis\' and "session.save_path = \'tcp://localhost:6379\'" (replace the latter with your redis connection) to ',
+							'description' => 'The session type used by MISP. The default setting is php, which will use the session settings configured in php.ini for the session data (supported options: php, database). The recommended option is php and setting your PHP up to use redis sessions via your php.ini. Just add \'session.save_handler = redis\' and "session.save_path = \'tcp://localhost:6379\'" (replace the latter with your redis connection) to ',
 							'value' => '',
 							'errorMessage' => '',
 							'test' => 'testForSessionDefaults',
@@ -932,11 +1063,19 @@ class Server extends AppModel {
 					),
 					'timeout' => array(
 							'level' => 0,
-							'description' => 'The timeout duration of sessions (in MINUTES). Keep in mind that autoregenerate can be used to extend the session on user activity.',
+							'description' => 'The timeout duration of sessions (in MINUTES).',
 							'value' => '',
 							'errorMessage' => '',
 							'test' => 'testForNumeric',
-							'type' => 'string',
+							'type' => 'string'
+					),
+					'cookie_timeout' => array(
+							'level' => 0,
+							'description' => 'The expiration of the cookie (in MINUTES). The session timeout gets refreshed frequently, however the cookies do not. Generally it is recommended to have a much higher cookie_timeout than timeout.',
+							'value' => '',
+							'errorMessage' => '',
+							'test' => 'testForNumeric',
+							'type' => 'numeric'
 					)
 			),
 			'Plugin' => array(
@@ -1014,6 +1153,14 @@ class Server extends AppModel {
 							'test' => 'testForEmpty',
 							'type' => 'string',
 					),
+					'RPZ_ns_alt' => array(
+						'level' => 2,
+						'description' => 'Alternate nameserver',
+						'value' => '',
+						'errorMessage' => '',
+						'test' => 'testForEmpty',
+						'type' => 'string',
+				),
 					'RPZ_email' => array(
 						'level' => 2,
 						'description' => 'The e-mail address specified in the SOA portion of the zone file.',
@@ -1085,13 +1232,77 @@ class Server extends AppModel {
 						'type' => 'string',
 						'afterHook' => 'zmqAfterHook',
 					),
-					'Sightings_enable' => array(
-						'level' => 1,
-						'description' => 'Enables or disables the sighting functionality. When enabled, users can use the UI or the appropriate APIs to submit sightings data about indicators.',
-						'value' => true,
+					'ZeroMQ_event_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of any event creations/edits/deletions.',
+						'value' => false,
 						'errorMessage' => '',
 						'test' => 'testBool',
-						'type' => 'boolean',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_object_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of any object creations/edits/deletions.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_object_reference_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of any object reference creations/deletions.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_attribute_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of any attribute creations/edits/soft deletions.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_tag_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of any tag creations/edits/deletions as well as tags being attached to / detached from various MISP elements.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_sighting_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of new sightings to the ZMQ pubsub feed.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_user_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of new/modified users to the ZMQ pubsub feed.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_organisation_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of new/modified organisations to the ZMQ pubsub feed.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
+					),
+					'ZeroMQ_audit_notifications_enable' => array(
+						'level' => 2,
+						'description' => 'Enables or disables the publishing of log entries to the ZMQ pubsub feed. Keep in mind, this can get pretty verbose depending on your logging settings.',
+						'value' => false,
+						'errorMessage' => '',
+						'test' => 'testBool',
+						'type' => 'boolean'
 					),
 					'Sightings_policy' => array(
 						'level' => 1,
@@ -1109,6 +1320,14 @@ class Server extends AppModel {
 						'errorMessage' => '',
 						'test' => 'testBool',
 						'type' => 'boolean',
+					),
+					'Sightings_range' => array(
+						'level' => 1,
+						'description' => 'Set the range in which sightings will be taken into account when generating graphs. For example a sighting with a sighted_date of 7 years ago might not be relevant anymore. Setting given in number of days, default is 365 days',
+						'value' => 365,
+						'errorMessage' => '',
+						'test' => 'testForNumeric',
+						'type' => 'numeric'
 					),
 					'CustomAuth_enable' => array(
 							'level' => 2,
@@ -1248,7 +1467,7 @@ class Server extends AppModel {
 					),
 					'Export_services_enable' => array(
 							'level' => 0,
-							'description' => 'Enable/disable the import services',
+							'description' => 'Enable/disable the export services',
 							'value' => false,
 							'errorMessage' => '',
 							'test' => 'testBool',
@@ -1256,7 +1475,7 @@ class Server extends AppModel {
 					),
 					'Export_timeout' => array(
 							'level' => 1,
-							'description' => 'Set a timeout for the import services',
+							'description' => 'Set a timeout for the export services',
 							'value' => 10,
 							'errorMessage' => '',
 							'test' => 'testForEmpty',
@@ -1294,6 +1513,83 @@ class Server extends AppModel {
 							'test' => 'testForPortNumber',
 							'type' => 'numeric'
 					),
+					'Cortex_services_url' => array(
+							'level' => 1,
+							'description' => 'The url used to access Cortex. By default, it is accessible at http://cortex-url',
+							'value' => 'http://127.0.0.1',
+							'errorMessage' => '',
+							'test' => 'testForEmpty',
+							'type' => 'string'
+					),
+					'Cortex_services_port' => array(
+							'level' => 1,
+							'description' => 'The port used to access Cortex. By default, this is port 9000',
+							'value' => '9000',
+							'errorMessage' => '',
+							'test' => 'testForPortNumber',
+							'type' => 'numeric'
+					),
+					'Cortex_services_enable' => array(
+							'level' => 0,
+							'description' => 'Enable/disable the import services',
+							'value' => false,
+							'errorMessage' => '',
+							'test' => 'testBool',
+							'type' => 'boolean'
+					),
+					'Cortex_authkey' => array(
+							'level' => 1,
+							'description' => 'Set an authentication key to be passed to Cortex',
+							'value' => '',
+							'errorMessage' => '',
+							'test' => 'testForEmpty',
+							'type' => 'string',
+							'null' => true
+					),
+					'Cortex_timeout' => array(
+							'level' => 1,
+							'description' => 'Set a timeout for the import services',
+							'value' => 120,
+							'errorMessage' => '',
+							'test' => 'testForEmpty',
+							'type' => 'numeric'
+					),
+					'Cortex_ssl_verify_peer' => array(
+							'level' => 1,
+							'description' => 'Set to false to disable SSL verification. This is not recommended.',
+							'value' => true,
+							'errorMessage' => '',
+							'test' => 'testBool',
+							'type' => 'boolean',
+							'null' => true
+					),
+					'Cortex_ssl_verify_host' => array(
+							'level' => 1,
+							'description' => 'Set to false if you wish to ignore hostname match errors when validating certificates.',
+							'value' => true,
+							'errorMessage' => '',
+							'test' => 'testBool',
+							'type' => 'boolean',
+							'null' => true
+					),
+					'Cortex_ssl_allow_self_signed' => array(
+							'level' => 1,
+							'description' => 'Set to true to enable self-signed certificates to be accepted. This requires Cortex_ssl_verify_peer to be enabled.',
+							'value' => false,
+							'errorMessage' => '',
+							'test' => 'testBool',
+							'type' => 'boolean',
+							'null' => true
+					),
+					'Cortex_ssl_cafile' => array(
+							'level' => 1,
+							'description' => 'Set to the absolute path of the Certificate Authority file that you wish to use for verifying SSL certificates.',
+							'value' => '',
+							'errorMessage' => '',
+							'test' => 'testForEmpty',
+							'type' => 'string',
+							'null' => true
+					),
 					'CustomAuth_custom_password_reset' => array(
 							'level' => 2,
 							'description' => 'Provide your custom authentication users with an external URL to the authentication system to reset their passwords.',
@@ -1329,6 +1625,7 @@ class Server extends AppModel {
 					'errorMessage' => '',
 					'test' => 'testDebugAdmin',
 					'type' => 'boolean',
+					'null' => true
 			),
 	);
 
@@ -1415,7 +1712,7 @@ class Server extends AppModel {
 							$server);
 					if (null != $event) {
 						$blocked = false;
-						if (Configure::read('MISP.enableEventBlacklisting')) {
+						if (Configure::read('MISP.enableEventBlacklisting') !== false) {
 							$this->EventBlacklist = ClassRegistry::init('EventBlacklist');
 							$r = $this->EventBlacklist->find('first', array('conditions' => array('event_uuid' => $event['Event']['uuid'])));
 							if (!empty($r))	{
@@ -1513,7 +1810,7 @@ class Server extends AppModel {
 		$shadowAttribute->recursive = -1;
 		if (!empty($events)) {
 			$proposals = $eventModel->downloadProposalsFromServer($events, $server);
-			if ($proposals !== null) {
+			if (!empty($proposals)) {
 				$uuidEvents = array_flip($events);
 				foreach ($proposals as $k => &$proposal) {
 					$proposal = $proposal['ShadowAttribute'];
@@ -1550,55 +1847,6 @@ class Server extends AppModel {
 							$job->saveField('progress', 50 * (($k + 1) / count($proposals)));
 						}
 					}
-				}
-			} else {
-				// Fallback for < 2.4.7 instances
-				$k = 0;
-				foreach ($events as $eid => $event) {
-					$proposals = $eventModel->downloadEventFromServer($event, $server, null, true);
-					if (null != $proposals) {
-						if (isset($proposals['ShadowAttribute']['id'])) {
-							$temp = $proposals['ShadowAttribute'];
-							$proposals['ShadowAttribute'] = array(0 => $temp);
-						}
-						foreach ($proposals['ShadowAttribute'] as &$proposal) {
-							$oldsa = $shadowAttribute->findOldProposal($proposal);
-							$proposal['event_id'] = $eid;
-							if (!$oldsa || $oldsa['timestamp'] < $proposal['timestamp']) {
-								if ($oldsa) $shadowAttribute->delete($oldsa['id']);
-								if (!isset($pulledProposals[$eid])) $pulledProposals[$eid] = 0;
-								$pulledProposals[$eid]++;
-								if (isset($proposal['old_id'])) {
-									$oldAttribute = $eventModel->Attribute->find('first', array('recursive' => -1, 'conditions' => array('uuid' => $proposal['uuid'])));
-									if ($oldAttribute) $proposal['old_id'] = $oldAttribute['Attribute']['id'];
-									else $proposal['old_id'] = 0;
-								}
-								// check if this is a proposal from an old MISP instance
-								if (!isset($proposal['Org']) && isset($proposal['org']) && !empty($proposal['org'])) {
-									$proposal['Org'] = $proposal['org'];
-									$proposal['EventOrg'] = $proposal['event_org'];
-								} else if (!isset($proposal['Org']) && !isset($proposal['EventOrg'])) {
-									continue;
-								}
-								$proposal['org_id'] = $this->Organisation->captureOrg($proposal['Org'], $user);
-								$proposal['event_org_id'] = $this->Organisation->captureOrg($proposal['EventOrg'], $user);
-								unset($proposal['Org']);
-								unset($proposal['EventOrg']);
-								$shadowAttribute->create();
-								if (!isset($proposal['deleted']) || !$proposal['deleted']) {
-									if ($shadowAttribute->save($proposal)) $shadowAttribute->sendProposalAlertEmail($eid);
-								}
-
-							}
-						}
-					}
-					if ($jobId) {
-						if ($k % 10 == 0) {
-							$job->id = $jobId;
-							$job->saveField('progress', 50 * (($k + 1) / count($events)));
-						}
-					}
-					$k++;
 				}
 			}
 		}
@@ -1664,6 +1912,7 @@ class Server extends AppModel {
 				)
 		);
 		$uri = $url . '/events/index';
+		$filter_rules['minimal'] = 1;
 		try {
 			$response = $HttpSocket->post($uri, json_encode($filter_rules), $request);
 			if ($response->isOk()) {
@@ -1739,20 +1988,17 @@ class Server extends AppModel {
 		} else {
 			$this->redirect(array('action' => 'index'));
 		}
-
-		if ($push !== 'mangle') {
-			$sgs = $this->Event->SharingGroup->find('all', array(
-				'recursive' => -1,
-				'contain' => array('Organisation', 'SharingGroupOrg', 'SharingGroupServer')
-			));
-			$sgIds = array();
-			foreach ($sgs as $k => $sg) {
-				if (!$this->Event->SharingGroup->checkIfServerInSG($sg, $this->data)) {
-					unset($sgs[$k]);
-					continue;
-				}
-				$sgIds[] = $sg['SharingGroup']['id'];
+		$sgs = $this->Event->SharingGroup->find('all', array(
+			'recursive' => -1,
+			'contain' => array('Organisation', 'SharingGroupOrg', 'SharingGroupServer')
+		));
+		$sgIds = array();
+		foreach ($sgs as $k => $sg) {
+			if (!$this->Event->SharingGroup->checkIfServerInSG($sg, $this->data)) {
+				unset($sgs[$k]);
+				continue;
 			}
+			$sgIds[] = $sg['SharingGroup']['id'];
 		}
 		if (!isset($sgIds) || empty($sgIds)) {
 			$sgIds = array(-1);
@@ -1792,7 +2038,11 @@ class Server extends AppModel {
 				$fails = array();
 				$lowestfailedid = null;
 				foreach ($eventUUIDsFiltered as $k => $eventUuid) {
-					$event = $this->Event->fetchEvent($user, array('event_uuid' => $eventUuid, 'includeAttachments' => true, 'includeAllTags' => true));
+					$event = $this->Event->fetchEvent($user, array(
+						'event_uuid' => $eventUuid,
+						'includeAttachments' => true,
+						'includeAllTags' => true
+					));
 					$event = $event[0];
 					$event['Event']['locked'] = true;
 					$result = $this->Event->uploadEventToServer(
@@ -1892,7 +2142,7 @@ class Server extends AppModel {
 		if ($sa_id == null) {
 			if ($event_id == null) {
 				// event_id is null when we are doing a push
-				$ids = $this->getEventIdsFromServer($server, true, $HttpSocket);
+				$ids = $this->getEventIdsFromServer($server, true, $HttpSocket, false, true);
 				// error return strings or ints or throw exceptions
 				if (!is_array($ids)) return false;
 				$conditions = array('uuid' => $ids);
@@ -1964,7 +2214,16 @@ class Server extends AppModel {
 	public function getCurrentServerSettings() {
 		$this->Module = ClassRegistry::init('Module');
 		$serverSettings = $this->serverSettings;
-		$moduleTypes = array('Enrichment', 'Import', 'Export');
+		$moduleTypes = array('Enrichment', 'Import', 'Export', 'Cortex');
+		$orgs = $this->Organisation->find('list', array(
+			'conditions' => array(
+				'Organisation.local' => 1
+			),
+			'fields' => array(
+				'Organisation.id', 'Organisation.name'
+			)
+		));
+		$orgs = array_merge(array('Unrestricted'), $orgs);
 		foreach ($moduleTypes as $moduleType) {
 			if (Configure::read('Plugin.' . $moduleType . '_services_enable')) {
 				$results = $this->Module->getModuleSettings($moduleType);
@@ -1976,6 +2235,12 @@ class Server extends AppModel {
 							$setting['type'] = 'boolean';
 							$setting['description'] = 'Enable or disable the ' . $module . ' module.';
 							$setting['value'] = false;
+						} else if ($result['type'] == 'orgs') {
+							$setting['description'] = 'Restrict the ' . $module . ' module to the given organisation.';
+							$setting['value'] = 0;
+							$setting['test'] = 'testLocalOrg';
+							$setting['type'] = 'numeric';
+							$setting['optionsSource'] = 'LocalOrgs';
 						} else {
 							$setting['test'] = 'testForEmpty';
 							$setting['type'] = 'string';
@@ -2004,6 +2269,12 @@ class Server extends AppModel {
 						$setting['type'] = 'boolean';
 						$setting['description'] = 'Enable or disable the ' . $module . ' module.';
 						$setting['value'] = false;
+					} else if ($result['type'] == 'orgs') {
+						$setting['description'] = 'Restrict the ' . $module . ' module to the given organisation.';
+						$setting['value'] = 0;
+						$setting['test'] = 'testLocalOrg';
+						$setting['type'] = 'numeric';
+						$setting['optionsSource'] = 'LocalOrgs';
 					} else {
 						$setting['test'] = 'testForEmpty';
 						$setting['type'] = 'string';
@@ -2055,6 +2326,9 @@ class Server extends AppModel {
 	}
 
 	public function serverSettingReadSingle($settingObject, $settingName, $leafKey) {
+		// invalidate config.php from php opcode cache
+		if (function_exists('opcache_reset')) opcache_reset();
+
 		$setting = Configure::read($settingName);
 		$result = $this->__evaluateLeaf($settingObject, $leafKey, $setting);
 		$result['setting'] = $settingName;
@@ -2063,10 +2337,12 @@ class Server extends AppModel {
 
 	private function __evaluateLeaf($leafValue, $leafKey, $setting) {
 		if (isset($setting)) {
-			$result = $this->{$leafValue['test']}($setting);
-			if ($result !== true) {
-				$leafValue['error'] = 1;
-				if ($result !== false) $leafValue['errorMessage'] = $result;
+			if (!empty($leafValue['test'])) {
+				$result = $this->{$leafValue['test']}($setting);
+				if ($result !== true) {
+					$leafValue['error'] = 1;
+					if ($result !== false) $leafValue['errorMessage'] = $result;
+				}
 			}
 			if ($setting !== '') $leafValue['value'] = $setting;
 		} else {
@@ -2080,6 +2356,13 @@ class Server extends AppModel {
 
 	public function testForNumeric($value) {
 		if (!is_numeric($value)) return 'This setting has to be a number.';
+		return true;
+	}
+
+	public function testUuid($value) {
+		if (empty($value) || !preg_match('/^\{?[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}\}?$/', $value)) {
+			return 'Invalid UUID.';
+		}
 		return true;
 	}
 
@@ -2111,8 +2394,14 @@ class Server extends AppModel {
 
 	public function testForPath($value) {
 		if ($value === '') return true;
-		if (preg_match('@^\/?(([a-z0-9_.]+[a-z0-9_.\- ]*[a-z0-9_.\-]|[a-z0-9_.])+\/?)+$@i', $value)) return true;
+		if (preg_match('@^\/?(([a-z0-9_.]+[a-z0-9_.\-.\:]*[a-z0-9_.\-.\:]|[a-z0-9_.])+\/?)+$@i', $value)) return true;
 		return 'Invalid characters in the path.';
+	}
+
+	public function testForWritableDir($value) {
+		if (!is_dir($value)) return 'Not a valid directory.';
+		if (!is_writeable($value)) return 'Not a writable directory.';
+		return true;
 	}
 
 	public function testDebug($value) {
@@ -2123,7 +2412,6 @@ class Server extends AppModel {
 	}
 
 	public function testDebugAdmin($value) {
-		if ($this->testForEmpty($value) !== true) return $this->testForEmpty($value);
 		if ($this->testBool($value) !== true) return 'This setting has to be either true or false.';
 		if (!$value) return true;
 		return 'Enabling debug is not recommended. Turn this on temporarily if you need to see a stack trace to debug an issue, but make sure this is not left on.';
@@ -2135,21 +2423,52 @@ class Server extends AppModel {
 		return true;
 	}
 
-	public function testBaseURL($value) {
-		if ($this->testForEmpty($value) !== true) return $this->testForEmpty($value);
-		$protocol = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443) === true ? 'HTTPS' : 'HTTP';
-		if ($value != strtolower($protocol) . '://' . $_SERVER['HTTP_HOST']) return false;
-		return true;
+
+	public function getHost() {
+		if (function_exists('apache_request_headers')){
+				 $headers = apache_request_headers();
+		} else {
+				 $headers = $_SERVER;
+		}
+
+		if ( array_key_exists( 'X-Forwarded-Host', $headers ) ) {
+				 $host = $headers['X-Forwarded-Host'];
+		} else {
+				 $host = $_SERVER['HTTP_HOST'];
+		}
+		return $host;
 	}
 
-	public function testMangle($value) {
-		if ($this->testBool($value) !== true) return $this->testBool($value);
-		if ($value) return 'Enabled, expect issues.';
+	public function getProto() {
+		if (function_exists('apache_request_headers')){
+				 $headers = apache_request_headers();
+		} else {
+				 $headers = $_SERVER;
+		}
+
+		if (array_key_exists('X-Forwarded-Proto',$headers)){
+				 $proto = $headers['X-Forwarded-Proto'];
+		} else {
+				 $proto = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443) === true ? 'HTTPS' : 'HTTP';
+		}
+		return $proto;
+	}
+
+	public function testBaseURL($value) {
+		// only run this check via the GUI, via the CLI it won't work
+		if (php_sapi_name() == 'cli') return true;
+		if ($this->testForEmpty($value) !== true) return $this->testForEmpty($value);
+		if ($value != strtolower($this->getProto()) . '://' . $this->getHost()) return false;
 		return true;
 	}
 
 	public function testDisableEmail($value) {
 		if (isset($value) && $value) return 'E-mailing is blocked.';
+		return true;
+	}
+
+	public function testDisableCache($value) {
+		if (isset($value) && $value) return 'Export caches are disabled.';
 		return true;
 	}
 
@@ -2160,7 +2479,6 @@ class Server extends AppModel {
 	}
 
 	public function testBool($value) {
-		if ($this->testForEmpty($value) !== true) return $this->testForEmpty($value);
 		if ($value !== true && $value !== false) return 'Value is not a boolean, make sure that you convert \'true\' to true for example.';
 		return true;
 	}
@@ -2230,7 +2548,7 @@ class Server extends AppModel {
 	public function testForGPGBinary($value) {
 		if (empty($value)) $value = $this->serverSettings['GnuPG']['binary']['value'];
 		if (file_exists($value)) return true;
-		return 'Could not find the gnupg executable at the defined location.';
+		return 'Could not find the GnuPG executable at the defined location.';
 	}
 
 	public function testForRPZDuration($value) {
@@ -2275,8 +2593,7 @@ class Server extends AppModel {
 	}
 
 	public function zmqAfterHook($setting, $value) {
-		App::uses('PubSubTool', 'Tools');
-		$pubSubTool = new PubSubTool();
+		$pubSubTool = $this->getPubSubTool();
 		// If we are trying to change the enable setting to false, we don't need to test anything, just kill the server and return true.
 		if ($setting == 'Plugin.ZeroMQ_enable') {
 			if ($value == false || $value == 0) {
@@ -2288,6 +2605,29 @@ class Server extends AppModel {
 			return true;
 		}
 		$pubSubTool->reloadServer();
+		return true;
+	}
+
+	public function disableCacheAfterHook($setting, $value) {
+		if ($value) {
+			$this->Event = ClassRegistry::init('Event');
+			App::uses('Folder', 'Utility');
+			App::uses('File', 'Utility');
+			// delete all cache files
+			foreach ($this->Event->export_types as $type => $settings) {
+				$dir = new Folder(APP . 'tmp/cached_exports/' . $type);
+				// No caches created for this type of export, move on
+				if ($dir == null) {
+					continue;
+				}
+				$files = $dir->find('.*' . $settings['extension']);
+				foreach ($files as $file) {
+					$file = new File($dir->pwd() . DS . $file);
+					$file->delete();
+					$file->close();
+				}
+			}
+		}
 		return true;
 	}
 
@@ -2339,39 +2679,11 @@ class Server extends AppModel {
 		return true;
 	}
 
-	public function eventBlacklistingBeforeHook($setting, $value) {
-		$this->cleanCacheFiles();
-		if ($value) {
-			try {
-				$this->EventBlacklist = ClassRegistry::init('EventBlacklist');
-				$schema = $this->EventBlacklist->schema();
-				if (!isset($schema['event_info'])) $this->updateDatabase('addEventBlacklistsContext');
-			} catch (Exception $e) {
-				$this->updateDatabase('addEventBlacklists');
-			}
-		}
-		return true;
-	}
-
 	public function customAuthBeforeHook($setting, $value) {
 		if ($value) $this->updateDatabase('addCustomAuth');
 		$this->cleanCacheFiles();
 		return true;
 	}
-
-	public function orgBlacklistingBeforeHook($setting, $value) {
-		$this->cleanCacheFiles();
-		if ($value) {
-			try {
-				$this->OrgBlacklist = ClassRegistry::init('OrgBlacklist');
-				$schema = $this->OrgBlacklist->schema();
-			} catch (Exception $e) {
-				$this->updateDatabase('addOrgBlacklists');
-			}
-		}
-		return true;
-	}
-
 
 	// never come here directly, always go through a secondary check like testForTermsFile in order to also pass along the expected file path
 	private function __testForFile($value, $path) {
@@ -2382,22 +2694,54 @@ class Server extends AppModel {
 		return true;
 	}
 
-	public function serverSettingsSaveValue($setting, $value) {
-		Configure::write($setting, $value);
-		if (Configure::read('Security.auth') && is_array(Configure::read('Security.auth')) && !empty(Configure::read('Security.auth'))) {
-			$authmethods = array();
-			foreach (Configure::read('Security.auth') as $auth) {
-				if (!in_array($auth, $authmethods)) $authmethods[] = $auth;
+	private function __serverSettingNormaliseValue($data, $value, $setting) {
+		if (!empty($data['type'])) {
+			if ($data['type'] == 'boolean') {
+				$value = $value ? true : false;
+			} else if ($data['type'] == 'numeric') {
+				$value = intval($value);
 			}
-			Configure::write('Security.auth', $authmethods);
 		}
-		$settingsToSave = array('debug', 'MISP', 'GnuPG', 'SMIME', 'Proxy', 'SecureAuth', 'Security', 'Session.defaults', 'Session.timeout', 'Session.autoRegenerate', 'site_admin_debug', 'Plugin', 'CertAuth', 'ApacheShibbAuth', 'ApacheSecureAuth');
+		return $value;
+	}
+
+	public function serverSettingsSaveValue($setting, $value) {
+		$settingObject = $this->getCurrentServerSettings();
+		foreach ($settingObject as $branchName => $branch) {
+			if (!isset($branch['level'])) {
+				foreach ($branch as $settingName => $settingObject) {
+					if ($setting == $branchName . '.' . $settingName) {
+						$value = $this->__serverSettingNormaliseValue($settingObject, $value, $setting);
+					}
+				}
+			} else {
+				if ($setting == $branchName) {
+					$value = $this->__serverSettingNormaliseValue($branch, $value, $setting);
+				}
+			}
+		}
+		Configure::write($setting, $value);
+		$arrayFix = array(
+			'Security.auth',
+			'ApacheSecureAuth.ldapFilter'
+		);
+		foreach ($arrayFix as $settingFix) {
+			if (Configure::read($settingFix) && is_array(Configure::read($settingFix)) && !empty(Configure::read($settingFix))) {
+				$arrayElements = array();
+				foreach (Configure::read($settingFix) as $array) {
+					if (!in_array($array, $arrayElements)) $arrayElements[] = $array;
+				}
+				Configure::write($settingFix, $arrayElements);
+			}
+		}
+		$settingsToSave = array('debug', 'MISP', 'GnuPG', 'SMIME', 'Proxy', 'SecureAuth', 'Security', 'Session.defaults', 'Session.timeout', 'Session.cookie_timeout', 'Session.autoRegenerate', 'site_admin_debug', 'Plugin', 'CertAuth', 'ApacheShibbAuth', 'ApacheSecureAuth');
 		$settingsArray = array();
 		foreach ($settingsToSave as $setting) {
 			$settingsArray[$setting] = Configure::read($setting);
 		}
 		$settingsString = var_export($settingsArray, true);
 		$settingsString = '<?php' . "\n" . '$config = ' . $settingsString . ';';
+		if (function_exists('opcache_reset')) opcache_reset();
 		file_put_contents(APP . 'Config' . DS . 'config.php', $settingsString);
 	}
 
@@ -2520,6 +2864,71 @@ class Server extends AppModel {
 		}
 	}
 
+	public function runPOSTtest($id) {
+		$server = $this->find('first', array('conditions' => array('Server.id' => $id)));
+		App::uses('SyncTool', 'Tools');
+		$syncTool = new SyncTool();
+		$HttpSocket = $syncTool->setupHttpSocket($server);
+		$request = array(
+			'header' => array(
+				'Authorization' => $server['Server']['authkey'],
+				'Accept' => 'application/json',
+				'Content-Type' => 'application/json',
+			)
+		);
+		$testFile = file_get_contents(APP . 'files/scripts/test_payload.txt');
+		$uri = $server['Server']['url'] . '/servers/postTest';
+		$this->Log = ClassRegistry::init('Log');
+		try {
+			$response = $HttpSocket->post($uri, json_encode(array('testString' => $testFile)), $request);
+			$response = json_decode($response, true);
+		} catch (Exception $e) {
+			$this->Log->create();
+			$this->Log->save(array(
+					'org' => 'SYSTEM',
+					'model' => 'Server',
+					'model_id' => $id,
+					'email' => 'SYSTEM',
+					'action' => 'error',
+					'user_id' => 0,
+					'title' => 'Error: POST connection test failed. Reason: ' . json_encode($e->getMessage()),
+			));
+			return 8;
+		}
+		if (!isset($response['body']['testString']) || $response['body']['testString'] !== $testFile) {
+			$responseString = isset($response['body']['testString']) ? $response['body']['testString'] : 'Response was empty.';
+			$this->Log->create();
+			$this->Log->save(array(
+					'org' => 'SYSTEM',
+					'model' => 'Server',
+					'model_id' => $id,
+					'email' => 'SYSTEM',
+					'action' => 'error',
+					'user_id' => 0,
+					'title' => 'Error: POST connection test failed due to the message body not containing the expected data. Response: ' . PHP_EOL . PHP_EOL . $responseString,
+			));
+			return 9;
+		}
+		$headers = array('Accept', 'Content-type');
+		foreach ($headers as $header) {
+			if (!isset($response['headers'][$header]) || $response['headers'][$header] != 'application/json') {
+				$responseHeader = isset($response['headers'][$header]) ? $response['headers'][$header] : 'Header was not set.';
+				$this->Log->create();
+				$this->Log->save(array(
+						'org' => 'SYSTEM',
+						'model' => 'Server',
+						'model_id' => $id,
+						'email' => 'SYSTEM',
+						'action' => 'error',
+						'user_id' => 0,
+						'title' => 'Error: POST connection test failed due to a header not matching the expected value. Expected: "application/json", received "' . $responseHeader,
+				));
+				return 10;
+			}
+		}
+		return 1;
+	}
+
 	public function checkVersionCompatibility($id, $user = array(), $HttpSocket = false) {
 		// for event publishing when we don't have a user.
 		if (empty($user)) $user = array('Organisation' => array('name' => 'SYSTEM'), 'email' => 'SYSTEM', 'id' => 0);
@@ -2527,7 +2936,6 @@ class Server extends AppModel {
 		$file = new File(ROOT . DS . 'VERSION.json', true);
 		$localVersion = json_decode($file->read(), true);
 		$file->close();
-
 		$server = $this->find('first', array('conditions' => array('Server.id' => $id)));
 		if (!$HttpSocket) {
 			App::uses('SyncTool', 'Tools');
@@ -2545,20 +2953,30 @@ class Server extends AppModel {
 		try {
 			$response = $HttpSocket->get($uri, '', $request);
 		} catch (Exception $e) {
-			$this->Log = ClassRegistry::init('Log');
-			$this->Log->create();
-			$this->Log->save(array(
-					'org' => $user['Organisation']['name'],
-					'model' => 'Server',
-					'model_id' => $id,
-					'email' => $user['email'],
-					'action' => 'error',
-					'user_id' => $user['id'],
-					'title' => 'Error: Connection to the server has failed.',
-			));
+			if (!isset($response) || $response->code != '200') {
+				$this->Log = ClassRegistry::init('Log');
+				$this->Log->create();
+				if (isset($response->code)) {
+					$title = 'Error: Connection to the server has failed.' . isset($response->code) ? ' Returned response code: ' . $response->code : '';
+				} else {
+					$title = 'Error: Connection to the server has failed. The returned exception\'s error message was: ' . $e->getMessage();
+				}
+				$this->Log->save(array(
+						'org' => $user['Organisation']['name'],
+						'model' => 'Server',
+						'model_id' => $id,
+						'email' => $user['email'],
+						'action' => 'error',
+						'user_id' => $user['id'],
+						'title' => $title,
+				));
+			}
+		}
+		if (!isset($response) || $response->code != '200') {
 			return 1;
 		}
 		$remoteVersion = json_decode($response->body, true);
+		$canPush = isset($remoteVersion['perm_sync']) ? $remoteVersion['perm_sync'] : false;
 		$remoteVersion = explode('.', $remoteVersion['version']);
 		if (!isset($remoteVersion[0])) {
 			$this->Log = ClassRegistry::init('Log');
@@ -2576,32 +2994,23 @@ class Server extends AppModel {
 		}
 		$response = false;
 		$success = false;
-		$canPush = false;
 		$issueLevel = "warning";
 		if ($localVersion['major'] > $remoteVersion[0]) $response = "Sync to Server ('" . $id . "') aborted. The remote instance's MISP version is behind by a major version.";
 		if ($response === false && $localVersion['major'] < $remoteVersion[0]) {
 			$response = "Sync to Server ('" . $id . "') aborted. The remote instance is at least a full major version ahead - make sure you update your MISP instance!";
-			$canPush = true;
 		}
 		if ($response === false && $localVersion['minor'] > $remoteVersion[1]) $response = "Sync to Server ('" . $id . "') aborted. The remote instance's MISP version is behind by a minor version.";
 		if ($response === false && $localVersion['minor'] < $remoteVersion[1]) {
 			$response = "Sync to Server ('" . $id . "') aborted. The remote instance is at least a full minor version ahead - make sure you update your MISP instance!";
-			$canPush = true;
 		}
 
 		// if we haven't set a message yet, we're good to go. We are only behind by a hotfix version
 		if ($response === false) {
 			$success = true;
-			$canPush = true;
 		}
 		else $issueLevel = "error";
 		if ($response === false && $localVersion['hotfix'] > $remoteVersion[2]) $response = "Sync to Server ('" . $id . "') initiated, but the remote instance is a few hotfixes behind.";
 		if ($response === false && $localVersion['hotfix'] < $remoteVersion[2]) $response = "Sync to Server ('" . $id . "') initiated, but the remote instance is a few hotfixes ahead. Make sure you keep your instance up to date!";
-
-		if (Configure::read('MISP.ManglePushTo23') && !$canPush) {
-			$canPush = 'mangle';
-			$response = "Sync to Server ('" . $id . "') should have been blocked, but mangle sync override is enabled. A downgraded synchronisation is highly advised again, please upgrade your instance as soon as possible.";
-		}
 
 		if ($response !== false) {
 			$this->Log = ClassRegistry::init('Log');
@@ -2735,9 +3144,9 @@ class Server extends AppModel {
 		return $readableFiles;
 	}
 
-	public function stixDiagnostics(&$diagnostic_errors, &$stixVersion, &$cyboxVersion) {
+	public function stixDiagnostics(&$diagnostic_errors, &$stixVersion, &$cyboxVersion, &$mixboxVersion) {
 		$result = array();
-		$expected = array('stix' => '1.1.1.4', 'cybox' => '2.1.0.12');
+		$expected = array('stix' => '1.1.1.4', 'cybox' => '2.1.0.12', 'mixbox' => '1.0.2');
 		// check if the STIX and Cybox libraries are working using the test script stixtest.py
 		$scriptResult = shell_exec('python ' . APP . 'files' . DS . 'scripts' . DS . 'stixtest.py');
 		$scriptResult = json_decode($scriptResult, true);
@@ -2745,10 +3154,10 @@ class Server extends AppModel {
 			$scriptResult['operational'] = $scriptResult['success'];
 			if ($scriptResult['operational'] == 0) {
 				$diagnostic_errors++;
-				return array('operational' => 0, 'stix' => array('expected' => $expected['stix']), 'cybox' => array('expected' => $expected['cybox']));
+				return array('operational' => 0, 'stix' => array('expected' => $expected['stix']), 'cybox' => array('expected' => $expected['cybox']), 'mixbox' => array('expected' => $expected['mixbox']));
 			}
 		} else {
-			return array('operational' => 0, 'stix' => array('expected' => $expected['stix']), 'cybox' => array('expected' => $expected['cybox']));
+			return array('operational' => 0, 'stix' => array('expected' => $expected['stix']), 'cybox' => array('expected' => $expected['cybox']), 'mixbox' => array('expected' => $expected['mixbox']));
 		}
 		$result['operational'] = $scriptResult['operational'];
 		foreach ($expected as $package => $version) {
@@ -2798,8 +3207,7 @@ class Server extends AppModel {
 
 	public function zmqDiagnostics(&$diagnostic_errors) {
 		if (!Configure::read('Plugin.ZeroMQ_enable')) return 1;
-		App::uses('PubSubTool', 'Tools');
-		$pubSubTool = new PubSubTool();
+		$pubSubTool = $this->getPubSubTool();
 		if (!$pubSubTool->checkIfPythonLibInstalled()) {
 			$diagnostic_errors++;
 			return 2;
@@ -2811,7 +3219,7 @@ class Server extends AppModel {
 
 	public function moduleDiagnostics(&$diagnostic_errors, $type = 'Enrichment') {
 		$this->Module = ClassRegistry::init('Module');
-		$types = array('Enrichment', 'Import', 'Export');
+		$types = array('Enrichment', 'Import', 'Export', 'Cortex');
 		$diagnostic_errors++;
 		if (Configure::read('Plugin.' . $type . '_services_enable')) {
 			$exception = false;
@@ -2866,7 +3274,18 @@ class Server extends AppModel {
 	}
 
 	public function workerDiagnostics(&$workerIssueCount) {
-		$this->ResqueStatus = new ResqueStatus\ResqueStatus(Resque::redis());
+		try {
+			$this->ResqueStatus = new ResqueStatus\ResqueStatus(Resque::redis());
+		} catch (Exception $e) {
+			// redis connection failed
+			return array(
+					'cache' => array('ok' => false),
+					'default' => array('ok' => false),
+					'email' => array('ok' => false),
+					'prio' => array('ok' => false),
+					'scheduler' => array('ok' => false)
+			);
+		}
 		$workers = $this->ResqueStatus->getWorkers();
 		if (function_exists('posix_getpwuid')) {
 			$currentUser = posix_getpwuid(posix_geteuid());
@@ -3277,6 +3696,7 @@ class Server extends AppModel {
 			}
 			$validServers[] = $server;
 		}
+
 		return $validServers;
 	}
 
@@ -3294,4 +3714,67 @@ class Server extends AppModel {
 		}
 		return $results;
 	}
+
+	public function databaseEncodingDiagnostics(&$diagnostic_errors) {
+		if (!isset($this->getDataSource()->config['encoding']) || strtolower($this->getDataSource()->config['encoding']) != 'utf8') {
+			$diagnostic_errors++;
+			return false;
+		}
+		return true;
+	}
+
+	public function getLatestGitRemote() {
+		return exec('timeout 3 git ls-remote https://github.com/MISP/MISP | head -1 | sed "s/HEAD//"');
+	}
+
+	public function getCurrentGitStatus() {
+		$status = array();
+		$status['commit'] = exec('git rev-parse HEAD');
+		$status['branch'] = $this->getCurrentBranch();
+		$status['latestCommit'] = $this->getLatestGitremote();
+		return $status;
+	}
+
+	public function getCurrentBranch() {
+		return exec("git symbolic-ref HEAD | sed 's!refs\/heads\/!!'");
+	}
+
+	public function checkoutMain() {
+		$mainBranch = '2.4';
+		return exec('git checkout ' . $mainBranch);
+	}
+
+	public function update($status) {
+		$final = '';
+		$command1 = 'git pull origin ' . $status['branch'] . ' 2>&1';
+		$command2 = 'git submodule init && git submodule update 2>&1';
+		$final = $command1 . "\n\n";
+		exec($command1, $output);
+		$final .= implode("\n", $output) . "\n\n=================================\n\n";
+		$output = array();
+		$final .= $command2 . "\n\n";
+		exec($command2, $output);
+		$final .= implode("\n", $output);
+		return $final;
+	}
+
+	public function getDefaultAttachments_dir() {
+		return APP . 'files';
+	}
+
+	public function fetchServer($id) {
+			if (empty($id)) return false;
+			$conditions = array('Server.id' => $id);
+			if (!is_numeric($id)) {
+				$conditions = array('OR' => array(
+					'LOWER(Server.name)' => strtolower($id),
+					'LOWER(Server.url)' => strtolower($id)
+				));
+			}
+			$server = $this->find('first', array(
+				'conditions' => $conditions,
+				'recursive' => -1
+			));
+			return (empty($server)) ? false : $server;
+		}
 }

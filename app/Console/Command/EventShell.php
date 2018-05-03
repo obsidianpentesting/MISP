@@ -55,7 +55,7 @@ class EventShell extends AppShell
 		if (!empty($eventIds)) {
 			foreach ($eventIds as $k => $eventId) {
 				$temp = $this->Event->fetchEvent($user, array('eventid' => $eventId['Event']['id'], 'includeAttachments' => Configure::read('MISP.cached_attachments')));
-				$file->append($converter->event2XML($temp[0], $user['Role']['perm_site_admin']) . PHP_EOL);
+				$file->append($converter->convert($temp[0], $user['Role']['perm_site_admin']) . PHP_EOL);
 				$this->Job->saveField('progress', ($k+1) / $eventCount *100);
 			}
 		}
@@ -88,7 +88,7 @@ class EventShell extends AppShell
 		$file->write('{"response":[');
 		foreach ($eventIds as $k => $eventId) {
 			$result = $this->Event->fetchEvent($user, array('eventid' => $eventId['Event']['id'], 'includeAttachments' => Configure::read('MISP.cached_attachments')));
-			$file->append($converter->event2JSON($result[0]));
+			$file->append($converter->convert($result[0]));
 			if ($k < count($eventIds) -1 ) $file->append(',');
 			$this->Job->saveField('progress', ($k+1) / $eventCount *100);
 		}
@@ -209,7 +209,7 @@ class EventShell extends AppShell
 		App::uses('RPZExport', 'Export');
 		$rpzExport = new RPZExport();
 		$rpzSettings = array();
-		$lookupData = array('policy', 'walled_garden', 'ns', 'email', 'serial', 'refresh', 'retry', 'expiry', 'minimum_ttl', 'ttl');
+		$lookupData = array('policy', 'walled_garden', 'ns', 'email', 'serial', 'refresh', 'retry', 'expiry', 'minimum_ttl', 'ttl', 'ns_alt');
 		foreach ($lookupData as $v) {
 			$tempSetting = Configure::read('Plugin.RPZ_' . $v);
 			if (isset($tempSetting)) $rpzSettings[$v] = Configure::read('Plugin.RPZ_' . $v);
@@ -347,6 +347,7 @@ class EventShell extends AppShell
 			$file = new File($dir->pwd() . DS . 'misp.bro.' . $user['Organisation']['name'] . '.intel');
 		}
 
+		$file->write('');
 		foreach ($types as $k => $type) {
 			$final = $this->Attribute->bro($user, $type);
 			foreach ($final as $attribute) {
@@ -475,7 +476,45 @@ class EventShell extends AppShell
 		$this->Job->save($job);
 		$log = ClassRegistry::init('Log');
 		$log->create();
-		$log->createLogEntry($user, 'publish', 'Event', $id, 'Event (' . $id . '): published.', 'publised () => (1)');
+		$log->createLogEntry($user, 'publish', 'Event', $id, 'Event (' . $id . '): published.', 'published () => (1)');
 	}
 
+	public function enrichment() {
+		file_put_contents('/var/www/MISP4/app/tmp/test', "0");
+		if (empty($this->args[0]) || empty($this->args[1]) || empty($this->args[2])) {
+			die('Usage: ' . $this->Server->command_line_functions['enrichment'] . PHP_EOL);
+		}
+		$userId = $this->args[0];
+		$user = $this->User->getAuthUser($userId);
+		if (empty($user)) die('Invalid user.');
+		$eventId = $this->args[1];
+		$modules = $this->args[2];
+		try {
+			$modules = json_decode($modules);
+		} catch (Exception $e) {
+			die('Invalid module JSON');
+		}
+		if (!empty($this->args[3])) {
+			$jobId = $this->args[3];
+		} else {
+			$this->Job->create();
+			$data = array(
+					'worker' => 'default',
+					'job_type' => 'enrichment',
+					'job_input' => 'Event: ' . $eventId . ' modules: ' . $modules,
+					'status' => 0,
+					'retries' => 0,
+					'org' => $user['Organisation']['name'],
+					'message' => 'Enriching event.',
+			);
+			$this->Job->save($data);
+			$jobId = $this->Job->id;
+		}
+		$options = array(
+			'user' => $user,
+			'event_id' => $eventId,
+			'modules' => $modules
+		);
+		$result = $this->Event->enrichment($options);
+	}
 }

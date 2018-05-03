@@ -6,7 +6,7 @@
 		echo $this->Form->hidden('target_id');
 		echo $this->Form->input('source_id', array(
 				'type' => 'text',
-				'label' => 'Event id to copy the attributes from',
+				'label' => __('Event id to copy the attributes from'),
 				'error' => array('escape' => false),
 				'div' => 'input clear',
 				'class' => 'input'
@@ -17,7 +17,7 @@
 		echo $this->Form->input('to_ids', array(
 				'type' => 'checkbox',
 				'checked' => false,
-				'label' => 'copy only IDS attributes',
+				'label' => __('copy only IDS attributes'),
 		));
 		?>
 
@@ -26,7 +26,6 @@
 echo $this->Form->button('Merge', array('class' => 'btn btn-primary'));
 echo $this->Form->end();
 ?>
-	<div id="confirmation_box" class="confirmation_box"></div>
 </div>
 <?php
 	$event['Event']['id'] = $this->request->data['Event']['target_id'];

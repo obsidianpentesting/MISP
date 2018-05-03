@@ -3,47 +3,58 @@
 App::uses('AppModel', 'Model');
 
 class Log extends AppModel {
-
+	public $warningActions = array(
+		'warning',
+		'change_pw',
+		'login_fail',
+		'version_warning',
+		'auth_fail'
+	);
+	public $errorActions = array(
+		'error'
+	);
 	public $validate = array(
 			'action' => array(
 			'rule' => array('inList', array(
+							'accept',
+							'accept_delegation',
+							'add',
+							'admin_email',
+							'auth',
+							'auth_fail',
+							'blacklisted',
+							'change_pw',
+							'delete',
+							'disable',
+							'discard',
+							'edit',
+							'email',
+							'enable',
+							'error',
+							'export',
+							'file_upload',
+							'galaxy',
 							'login',
 							'login_fail',
 							'logout',
-							'add',
-							'edit',
-							'change_pw',
-							'delete',
+							'merge',
+							'pruneUpdateLogs',
 							'publish',
-							'accept',
-							'discard',
+							'publish alert',
 							'pull',
 							'push',
-							'blacklisted',
-							'admin_email',
-							'tag',
-							'publish alert',
-							'warning',
-							'error',
-							'email',
-							'serverSettingsEdit',
 							'remove_dead_workers',
-							'upload_sample',
+							'request_delegation',
+							'reset_auth_key',
+							'serverSettingsEdit',
+							'tag',
+							'undelete',
+							'update',
 							'update_database',
 							'upgrade_24',
+							'upload_sample',
 							'version_warning',
-							'auth',
-							'auth_fail',
-							'reset_auth_key',
-							'update',
-							'enable',
-							'disable',
-							'accept_delegation',
-							'request_delegation',
-							'merge',
-							'undelete',
-							'file_upload',
-							'export'
+							'warning'
 						)),
 			'message' => 'Options : ...'
 		)
@@ -85,6 +96,14 @@ class Log extends AppModel {
 			if (!isset($this->data['Log'][$field]) || empty($this->data['Log'][$field])) $this->data['Log'][$field] = $empty;
 		}
 		if (!isset($this->data['Log']['created'])) $this->data['Log']['created'] = date('Y-m-d H:i:s');
+		if (!isset($this->data['Log']['org'])) $this->data['Log']['org'] = 'SYSTEM';
+		$truncate_fields = array('title', 'change', 'description');
+		foreach ($truncate_fields as $tf) {
+			if (isset($this->data['Log'][$tf]) && strlen($this->data['Log'][$tf]) >= 65535) {
+				$this->data['Log'][$tf] = substr($this->data['Log'][$tf], 0, 65532) . '...';
+			}
+		}
+		$this->logData($this->data);
 		return true;
 	}
 
@@ -139,5 +158,106 @@ class Log extends AppModel {
 				'model' => $model,
 				'model_id' => $model_id,
 		));
+	}
+
+	// to combat a certain bug that causes the upgrade scripts to loop without being able to set the correct version
+	// this function remedies a fixed upgrade bug instance by eliminating the massive number of erroneous upgrade log entries
+	public function pruneUpdateLogs($jobId = false, $user) {
+		$max = $this->find('first', array('fields' => array('MAX(id) AS lastid')));
+		if (!empty($max)) {
+			$max = $max[0]['lastid'];
+		}
+		if ($jobId) {
+			$this->Job = ClassRegistry::init('Job');
+			$this->Job->id = $jobId;
+			if (!$this->Job->exists()) {
+				$jobId = false;
+			}
+		}
+		$iterations = ($max / 1000);
+		for ($i = 0; $i < $iterations; $i++) {
+			$this->deleteAll(array(
+				'OR' => array(
+						'action' => 'update_database',
+						'AND' => array(
+							'action' => 'edit',
+							'model' => 'AdminSetting'
+						)
+				),
+				'id >' => $i * 1000,
+				'id <' => ($i+1) * 1000));
+			if ($jobId) {
+				$this->Job->saveField('progress', $i * 100 / $iterations);
+			}
+		}
+		$this->create();
+		$this->save(array(
+				'org' => $user['Organisation']['name'],
+				'email' =>$user['email'],
+				'user_id' => $user['id'],
+				'action' => 'pruneUpdateLogs',
+				'title' => 'Pruning updates',
+				'change' => 'Pruning completed in ' . $i . ' iteration(s).',
+				'model' => 'Log',
+				'model_id' => 0
+		));
+	}
+
+
+	public function pruneUpdateLogsRouter($user) {
+		if (Configure::read('MISP.background_jobs')) {
+			$job = ClassRegistry::init('Job');
+			$job->create();
+			$data = array(
+					'worker' => 'default',
+					'job_type' => 'prune_update_logs',
+					'job_input' => 'All update entries',
+					'status' => 0,
+					'retries' => 0,
+					'org_id' => $user['org_id'],
+					'org' => $user['Organisation']['name'],
+					'message' => 'Purging the heretic.',
+			);
+			$job->save($data);
+			$jobId = $job->id;
+			$process_id = CakeResque::enqueue(
+					'default',
+					'AdminShell',
+					array('prune_update_logs', $jobId, $user['id']),
+					true
+			);
+			$job->saveField('process_id', $process_id);
+			return $process_id;
+		} else {
+			$result = $this->pruneUpdateLogs(false, $user);
+			return $result;
+		}
+	}
+
+	function logData($data) {
+		if (Configure::read('Plugin.ZeroMQ_enable') && Configure::read('Plugin.ZeroMQ_user_notifications_enable')) {
+			$pubSubTool = $this->getPubSubTool();
+			$pubSubTool->publish($data, 'audit', 'log');
+		}
+		if (Configure::read('Security.syslog')) {
+			// write to syslogd as well
+			$syslog = new SysLog();
+			$action = 'info';
+			if (isset($data['Log']['action'])) {
+				if (in_array($data['Log']['action'], $this->errorActions)) {
+					$action = 'err';
+				}
+				if (in_array($data['Log']['action'], $this->warningActions)) {
+					$action = 'warning';
+				}
+			}
+
+			$entry = $data['Log']['action'];
+			if (!empty($data['Log']['description'])) {
+				$entry .= sprintf(' -- %s', $data['Log']['description']);
+			}
+			$syslog->write($action, $entry);
+		}
+		return true;
 	}
 }

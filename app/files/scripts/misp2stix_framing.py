@@ -1,5 +1,4 @@
 import sys, json, uuid, os, time, datetime, re
-from misp2cybox import *
 from dateutil.tz import tzutc
 from stix.indicator import Indicator
 from stix.indicator.valid_time import ValidTime
@@ -17,6 +16,13 @@ from stix.common.related import *
 from stix.common.confidence import Confidence
 from stix.common.vocabs import IncidentStatus
 from cybox.utils import Namespace
+# if you rely on old idgen from previous stix libraries, mixbox is not installed
+try:
+    from stix.utils import idgen
+except ImportError:
+    from mixbox import idgen
+
+from stix import __version__ as STIXVER
 
 NS_DICT = {
         "http://cybox.mitre.org/common-2" : 'cyboxCommon',
@@ -24,6 +30,7 @@ NS_DICT = {
         "http://cybox.mitre.org/default_vocabularies-2" : 'cyboxVocabs',
         "http://cybox.mitre.org/objects#ASObject-1" : 'ASObj',
         "http://cybox.mitre.org/objects#AddressObject-2" : 'AddressObj',
+        "http://cybox.mitre.org/objects#PortObject-2" : 'PortObj',
         "http://cybox.mitre.org/objects#DomainNameObject-1" : 'DomainNameObj',
         "http://cybox.mitre.org/objects#EmailMessageObject-2" : 'EmailMessageObj',
         "http://cybox.mitre.org/objects#FileObject-2" : 'FileObj',
@@ -85,22 +92,47 @@ SCHEMALOC_DICT = {
 
 
 def main(args):
-    if len(sys.argv) < 4:
+    if len(args) < 4:
         sys.exit("Invalid parameters")
-    namespace = [sys.argv[1], sys.argv[2].replace(" ", "_")]
+
+    baseURL = args[1]
+    if not baseURL:
+        baseURL = 'https://www.misp-project.org'
+    orgname = args[2]
+
+    namespace = [baseURL, orgname.replace(" ", "_")]
     namespace[1] = re.sub('[\W]+', '', namespace[1])
     NS_DICT[namespace[0]]=namespace[1]
-    stix.utils.idgen.set_id_namespace({namespace[0]: namespace[1]})
+
+    try:
+        idgen.set_id_namespace({baseURL: namespace[1]})
+    except ValueError:
+        # Some weird stix error that sometimes occurs if the stars
+        # align and Mixbox is being mean to us
+        # Glory to STIX, peace and good xmlns be upon it
+        try:
+            idgen.set_id_namespace(Namespace(baseURL, namespace[1]))
+        except TypeError:
+            # Ok this only occurs if the script is being run under py3
+            # and if we're running a REALLY weird version of stix
+            # May as well catch it
+            idgen.set_id_namespace(Namespace(baseURL, namespace[1], "MISP"))
+
+
     stix_package = STIXPackage()
     stix_header = STIXHeader()
-    stix_header.title="Export from " + sys.argv[2] + " MISP"
+
+    stix_header.title="Export from {} MISP".format(orgname)
     stix_header.package_intents="Threat Report"
     stix_package.stix_header = stix_header
-    if sys.argv[3] == 'json':
+    stix_package.version = "1.1.1"
+
+    if args[3] == 'json':
         stix_string = stix_package.to_json()[:-1]
         stix_string += ', "related_packages": ['
     else:
         stix_string = stix_package.to_xml(auto_namespace=False, ns_dict=NS_DICT, schemaloc_dict=SCHEMALOC_DICT)
+        stix_string = stix_string.decode()
         stix_string = stix_string.replace("</stix:STIX_Package>\n", "");
     print(stix_string)
 

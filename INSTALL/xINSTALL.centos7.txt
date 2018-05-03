@@ -31,7 +31,7 @@ yum install centos-release-scl
 yum install gcc git httpd zip redis mariadb mariadb-server python-devel python-pip libxslt-devel zlib-devel
 
 # Install PHP 5.6 from SCL, see https://www.softwarecollections.org/en/scls/rhscl/rh-php56/
-yum install rh-php56 rh-php56-php-fpm rh-php56-php-devel rh-php56-php-mysqlnd rh-php56-php-mbstring rh-php56-bcmath
+yum install rh-php56 rh-php56-php-fpm rh-php56-php-devel rh-php56-php-mysqlnd rh-php56-php-mbstring rh-php56-php-xml rh-php56-php-bcmath rh-php56-php-opcache
 
 # rh-php56-php only provided mod_php for httpd24-httpd from SCL
 # if we want to use httpd from CentOS base we can use rh-php56-php-fpm instead
@@ -72,8 +72,7 @@ git checkout tags/$(git describe --tags `git rev-list --tags --max-count=1`)
 git config core.filemode false
 
 # install Mitre's STIX and its dependencies by running the following commands:
-pip install importlib
-yum install python-lxml python-dateutil python-six
+yum install python-importlib python-lxml python-dateutil python-six
 cd /var/www/MISP/app/files/scripts
 git clone https://github.com/CybOXProject/python-cybox.git
 git clone https://github.com/STIXProject/python-stix.git
@@ -88,6 +87,14 @@ cd /var/www/MISP/app/files/scripts/python-stix
 git checkout v1.1.1.4
 git config core.filemode false
 python setup.py install
+
+# install mixbox to accomodate the new STIX dependencies:
+cd /var/www/MISP/app/files/scripts/
+git clone https://github.com/CybOXProject/mixbox.git
+cd /var/www/MISP/app/files/scripts/mixbox
+git checkout v1.0.2
+git config core.filemode false
+python setup.py install
 umask $UMASK
 
 4/ CakePHP
@@ -99,10 +106,11 @@ umask $UMASK
 cd /var/www/MISP
 git submodule init
 git submodule update
+# Make git ignore filesystem permission differences for submodules
+git submodule foreach git config core.filemode false
 
 # Once done, install CakeResque along with its dependencies if you intend to use the built in background jobs:
 cd /var/www/MISP/app
-curl -s https://getcomposer.org/installer | php
 php composer.phar require kamisama/cake-resque:4.1.2
 php composer.phar config vendor-dir Vendor
 php composer.phar install
@@ -195,7 +203,24 @@ firewall-cmd --reload
 # Check out the apache.misp.ssl file for an example
 
 
-8/ MISP configuration
+8/ Log rotation
+---------------
+# MISP saves the stdout and stderr of it's workers in /var/www/MISP/app/tmp/logs
+# To rotate these logs install the supplied logrotate script:
+
+cp INSTALL/misp.logrotate /etc/logrotate.d/misp
+
+# Now make logrotate work under SELinux as well
+# Allow logrotate to modify the log files
+semanage fcontext -a -t httpd_log_t "/var/www/MISP/app/tmp/logs(/.*)?"
+chcon -R -t httpd_log_t /var/www/MISP/app/tmp/logs
+
+# Allow logrotate to read /var/www
+checkmodule -M -m -o /tmp/misplogrotate.mod INSTALL/misplogrotate.te
+semodule_package -o /tmp/misplogrotate.pp -m /tmp/misplogrotate.mod
+semodule -i /tmp/misplogrotate.pp
+
+9/ MISP configuration
 ---------------------
 # There are 4 sample configuration files in /var/www/MISP/app/Config that need to be copied
 cd /var/www/MISP/app/Config
@@ -206,8 +231,23 @@ cp -a config.default.php config.php
 
 # Configure the fields in the newly created files:
 # config.php   : baseurl (example: 'baseurl' => 'http://misp',) - don't use "localhost" it causes issues when browsing externally
-# config.php   : Uncomment and set the timezone: `// date_default_timezone_set('UTC');`
+# core.php   : Uncomment and set the timezone: `// date_default_timezone_set('UTC');`
 # database.php : login, port, password, database
+# DATABASE_CONFIG has to be filled
+# With the default values provided in section 6, this would look like:
+# class DATABASE_CONFIG {
+#   public $default = array(
+#       'datasource' => 'Database/Mysql',
+#       'persistent' => false,
+#       'host' => 'localhost',
+#       'login' => 'misp', // grant usage on *.* to misp@localhost
+#       'port' => 3306,
+#       'password' => 'XXXXdbpasswordhereXXXXX', // identified by 'XXXXdbpasswordhereXXXXX';
+#       'database' => 'misp', // create database misp;
+#       'prefix' => '',
+#       'encoding' => 'utf8',
+#   );
+#}
 
 # Important! Change the salt key in /var/www/MISP/app/Config/config.php
 # The admin user account will be generated on the first login, make sure that the salt is changed before you create that user
